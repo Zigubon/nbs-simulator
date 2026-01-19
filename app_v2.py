@@ -85,13 +85,13 @@ with st.sidebar:
     density_ratio = c2.number_input("밀도 (%)", value=100, step=10, help="산림청 표준(3,000본/ha) 대비 식재 비율") / 100
     sim_years = st.slider("사업 기간 (년)", 10, 40, 30)
 
-    # [2] 표준 방법론 적용 (Methodology Factors) - [복구 및 강화]
+    # [2] 표준 방법론 적용 (Methodology Factors)
     st.subheader("2. 방법론 차감 계수 (Deduction)")
     with st.expander("ℹ️ 순흡수량(Net) 산정 기준"):
         st.markdown("""
         **표준 방법론(Standard Methodology) 적용:**
-        * [cite_start]**사업 배출량 (Project Emissions):** 장비 가동, 비료 사용 등 사업 수행 중 발생하는 배출량 차감[cite: 12].
-        * [cite_start]**누출 및 버퍼 (Leakage & Buffer):** 자연재해(화재, 병해충) 및 외부 배출 증가를 대비한 유보 물량 차감[cite: 12].
+        * **사업 배출량 (Project Emissions):** 장비 가동, 비료 사용 등 사업 수행 중 발생하는 배출량 차감.
+        * **누출 및 버퍼 (Leakage & Buffer):** 자연재해(화재, 병해충) 및 외부 배출 증가를 대비한 유보 물량 차감.
         """)
 
     col_m1, col_m2 = st.columns(2)
@@ -110,7 +110,7 @@ with st.sidebar:
     st.caption("Developed by Zigubon Lab")
 
 # -----------------------------------------------------------
-# 4. 엔진 계산 (Core Logic: 다층 식재 + Net Credit)
+# 4. 엔진 계산 (Core Logic)
 # -----------------------------------------------------------
 
 selected_rows = df_forest[df_forest['name'].isin(selected_names)]
@@ -224,7 +224,7 @@ with tab1:
             
         st.dataframe(df_sim[['year', 'revenue', 'cost', 'net_cashflow']].style.format("{:,.0f}"), height=200)
 
-# Tab 2: ESG Details [복구된 부분]
+# Tab 2: ESG Details
 with tab2:
     selected_ids = df_forest[df_forest['name'].isin(selected_names)]['id'].values
     selected_benefits = df_benefit[df_benefit['id'].isin(selected_ids)]
@@ -249,7 +249,6 @@ with tab2:
         if len(selected_names) > 1:
             st.success(f"✅ **다층 식재 효과:** {len(selected_names)}종 혼합으로 생태 가치가 강화되었습니다.")
 
-        # [복구] 수종별 상세 정보 Expander
         with st.expander("ℹ️ 수종별 생태적 특성 상세 보기", expanded=True):
             for idx, row in selected_benefits.iterrows():
                 st.markdown(f"**🌲 {row['name']}**")
@@ -261,7 +260,6 @@ with tab2:
         offset_cars = df_sim['net_t'].mean() / 2.4
         
         st.metric("연간 승용차 상쇄", f"{offset_cars:,.0f} 대")
-        
         st.caption(f"이 숲({area_ha}ha)은 매년 승용차 **{int(offset_cars)}대**가 뿜어내는 탄소를 0으로 만듭니다.")
         st.progress(min(1.0, offset_cars/100))
         st.info("기준: 국립산림과학원 (승용차 1대 = 2.4 tCO2/년)")
