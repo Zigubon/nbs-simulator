@@ -166,11 +166,28 @@ with tab2:
         - **내화성(산불저항):** 🔥 {b_info['fire_resistance']} / 3.0
         """)
         st.info(f"ℹ️ **생태적 근거:** {b_info['logic_note']}")
-    
+        
+        # --- [추가된 부분] 승용차 상쇄 효과 시각화 ---
     with c2:
+        st.markdown("### 🚗 생활 속 체감 효과")
+        
+        # 로직: 국립산림과학원 기준 승용차 1대 연간 배출량 = 약 2.4톤
+        # 시뮬레이션된 숲의 '연평균' 흡수량을 기준으로 계산
+        avg_absorption = df_sim['absorption_t'].mean()
+        cars_offset = avg_absorption / 2.4
+        
+        st.metric(
+            label="연간 승용차 배출 상쇄 효과",
+            value=f"{cars_offset:,.0f} 대",
+            delta="승용차 1대 = 2.4 tCO₂/년 기준",
+            help="출처: 국립산림과학원 「주요 산림수종의 표준탄소흡수량」 (승용차 연평균 주행거리 15,000km 기준)"
+        )
+    
+    with c3:
         # Sensitivity Analysis (간단 버전)
         st.caption("📉 생존율 변화에 따른 총 흡수량 민감도")
         sens_rates = [0.5, 0.7, 0.9, 1.0]
         sens_vals = [raw_growth.sum() * area_ha * r for r in sens_rates]
         fig_sens = px.bar(x=[f"{r*100}%" for r in sens_rates], y=sens_vals, labels={'x':'생존율', 'y':'총 흡수량(t)'}, title="Scenario Analysis")
+
         st.plotly_chart(fig_sens, use_container_width=True, height=250)
