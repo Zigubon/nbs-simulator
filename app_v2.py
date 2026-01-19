@@ -23,10 +23,14 @@ st.markdown("""
 # -----------------------------------------------------------
 @st.cache_data
 def load_data():
-    forest = pd.read_csv('forest_data_2026.csv')
-    price = pd.read_csv('carbon_price_scenarios.csv')
-    benefit = pd.read_csv('co_benefits.csv')
-    return forest, price, benefit
+    try:
+        forest = pd.read_csv('forest_data_2026.csv')
+        price = pd.read_csv('carbon_price_scenarios.csv')
+        benefit = pd.read_csv('co_benefits.csv')
+        return forest, price, benefit
+    except FileNotFoundError:
+        st.error("데이터 파일을 찾을 수 없습니다. (forest_data_2026.csv 등)")
+        return None, None, None
 
 def interpolate_growth(forest_df, species_id, years=30):
     species_data = forest_df[forest_df['id'] == species_id].iloc[0]
@@ -35,10 +39,9 @@ def interpolate_growth(forest_df, species_id, years=30):
     f = interp1d(x_points, y_points, kind='linear', fill_value="extrapolate")
     return f(np.arange(1, years + 1))
 
-try:
-    df_forest, df_price, df_benefit = load_data()
-except:
-    st.error("데이터 파일을 찾을 수 없습니다. (forest_data_2026.csv 등)")
+df_forest, df_price, df_benefit = load_data()
+
+if df_forest is None:
     st.stop()
 
 # -----------------------------------------------------------
@@ -159,6 +162,7 @@ with tab2:
     
     st.subheader("ESG Impact & Co-benefits")
     c1, c2 = st.columns(2)
+    
     with c1:
         st.markdown(f"""
         - **생물다양성 지수:** ⭐ {b_info['biodiversity_index']} / 5.0
@@ -166,8 +170,8 @@ with tab2:
         - **내화성(산불저항):** 🔥 {b_info['fire_resistance']} / 3.0
         """)
         st.info(f"ℹ️ **생태적 근거:** {b_info['logic_note']}")
-        
-        # --- [추가된 부분] 승용차 상쇄 효과 시각화 ---
+
+    # --- [추가된 부분] 승용차 상쇄 효과 시각화 ---
     with c2:
         st.markdown("### 🚗 생활 속 체감 효과")
         
@@ -182,12 +186,7 @@ with tab2:
             delta="승용차 1대 = 2.4 tCO₂/년 기준",
             help="출처: 국립산림과학원 「주요 산림수종의 표준탄소흡수량」 (승용차 연평균 주행거리 15,000km 기준)"
         )
-    
-    with c3:
-        # Sensitivity Analysis (간단 버전)
-        st.caption("📉 생존율 변화에 따른 총 흡수량 민감도")
-        sens_rates = [0.5, 0.7, 0.9, 1.0]
-        sens_vals = [raw_growth.sum() * area_ha * r for r in sens_rates]
-        fig_sens = px.bar(x=[f"{r*100}%" for r in sens_rates], y=sens_vals, labels={'x':'생존율', 'y':'총 흡수량(t)'}, title="Scenario Analysis")
 
-        st.plotly_chart(fig_sens, use_container_width=True, height=250)
+        # 간단한 막대 그래프로 표현 (자동차 아이콘 느낌)
+        st.caption(f"이 숲({area_ha}ha)은 매년 승용차 **{int(cars_offset)}대**가 뿜어내는 탄소를 0으로 만듭니다.")
+        st.progress(min(1.0, cars_offset / 100)) # 100대 기준 게이지 바 (예시)
