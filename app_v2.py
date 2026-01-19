@@ -14,11 +14,13 @@ st.markdown("""
     .main { background-color: #f4f6f9; }
     div[data-testid="stMetricValue"] { font-size: 24px; color: #2c3e50; }
     .big-font { font-size:18px !important; font-weight: bold; color: #27ae60; }
+    /* 정보 박스 스타일 커스텀 */
+    div[data-testid="stAlert"] { padding: 0.5rem; margin-bottom: 1rem; }
     </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------
-# 2. 데이터 로드 및 함수
+# 2. 데이터 로드 및 함수 정의
 # -----------------------------------------------------------
 @st.cache_data
 def load_data():
@@ -57,7 +59,9 @@ if df_forest is None:
 with st.sidebar:
     st.header("🎛️ 시뮬레이션 조건")
     
-    # [1] 수종 선택 (안전한 기본값 로직)
+    # -------------------------------------------------------
+    # [Section 1] 식재 계획
+    # -------------------------------------------------------
     st.subheader("1. 식재 계획 (Planting)")
     
     available_names = df_forest['name'].tolist()
@@ -65,7 +69,7 @@ with st.sidebar:
     default_cands = ['상수리나무', '화살나무(관목)'] 
     valid_defaults = [n for n in default_cands if n in available_names]
     
-    # 추천 조합이 없으면 첫 번째 수종 선택
+    # 추천 조합이 없으면 첫 번째 수종 선택 (에러 방지)
     if not valid_defaults and available_names:
         valid_defaults = [available_names[0]]
 
@@ -85,7 +89,9 @@ with st.sidebar:
     density_ratio = c2.number_input("밀도 (%)", value=100, step=10, help="산림청 표준(3,000본/ha) 대비 식재 비율") / 100
     sim_years = st.slider("사업 기간 (년)", 10, 40, 30)
 
-    # [2] 표준 방법론 적용 (Methodology Factors)
+    # -------------------------------------------------------
+    # [Section 2] 방법론 적용 (Methodology)
+    # -------------------------------------------------------
     st.subheader("2. 방법론 차감 계수 (Deduction)")
     with st.expander("ℹ️ 순흡수량(Net) 산정 기준"):
         st.markdown("""
@@ -98,10 +104,22 @@ with st.sidebar:
     project_emission_rate = col_m1.number_input("사업 배출 (%)", value=5.0, step=1.0) / 100
     buffer_rate = col_m2.number_input("버퍼(Risk) (%)", value=10.0, step=1.0) / 100
 
-    # [3] 경제성 지표
+    # -------------------------------------------------------
+    # [Section 3] 경제성 및 재무 (이 부분이 요청하신 핵심입니다!)
+    # -------------------------------------------------------
     st.subheader("3. 경제성 시나리오")
-    price_adj = st.slider("탄소가격 상승률 (CAGR, %)", -5.0, 10.0, 0.0, 0.5) / 100
-    discount_rate = st.slider("할인율 (%)", 0.0, 10.0, 3.0, 0.1) / 100
+    
+    # [NEW] 경제성 시나리오 가이드 박스 추가
+    st.info("""
+    **📈 시나리오 설정 가이드 (CAGR)**
+    
+    * **🔵 Base Case (0.0%):** 현재 물가상승률 수준 유지. 가장 보수적이고 현실적인 접근.
+    * **🔴 High Case (+3~5%):** 2030 NDC 목표 강화 및 EU CBAM 등 규제 강화로 탄소 가격 급등 예상 시.
+    * **⚪ Low Case (-1~-2%):** 경기 침체 또는 규제 완화로 인한 시장 가격 정체 시.
+    """)
+    
+    price_adj = st.slider("탄소가격 추가 상승률 (CAGR, %)", -5.0, 10.0, 0.0, 0.5, help="기본 가격 시나리오 대비 매년 추가 상승/하락하는 비율") / 100
+    discount_rate = st.slider("할인율 (Discount Rate, %)", 0.0, 10.0, 3.0, 0.1, help="미래 가치를 현재 가치로 환산하는 비율 (사회적 할인율)") / 100
     
     initial_cost = st.number_input("초기 조성비 (백만원)", value=100) * 1e6
     maintenance_cost = st.number_input("연간 관리비 (백만원)", value=5) * 1e6
@@ -110,35 +128,38 @@ with st.sidebar:
     st.caption("Developed by Zigubon Lab")
 
 # -----------------------------------------------------------
-# 4. 엔진 계산 (Core Logic)
+# 4. 엔진 계산 (Core Logic: 다층 식재 + Net Credit)
 # -----------------------------------------------------------
 
 selected_rows = df_forest[df_forest['name'].isin(selected_names)]
 trees = selected_rows[selected_rows['type'] == 'Tree']
 shrubs = selected_rows[selected_rows['type'] == 'Shrub']
 
-# 1) Gross Absorption (총 흡수량)
-# 다층 식재 로직: 교목(평균) + 관목(평균) = 합산(Layering)
+# 1) Gross Absorption (총 흡수량) 계산
+# 로직: 교목끼리는 공간 분할(평균), 관목끼리도 공간 분할(평균), 하지만 교목+관목은 합산(적층)
 tree_growth = np.zeros(sim_years)
 if not trees.empty:
     for t_id in trees['id']:
         tree_growth += interpolate_growth(df_forest, t_id, sim_years)
-    tree_growth /= len(trees) # 교목끼리는 공간 분할
+    tree_growth /= len(trees) 
 
 shrub_growth = np.zeros(sim_years)
 if not shrubs.empty:
     for s_id in shrubs['id']:
         shrub_growth += interpolate_growth(df_forest, s_id, sim_years)
-    shrub_growth /= len(shrubs) # 관목끼리는 공간 분할
+    shrub_growth /= len(shrubs)
 
+# 최종 성장 곡선 (Layering)
 total_gross_curve = tree_growth + shrub_growth
-gross_absorption = total_gross_curve * area_ha * density_ratio * 0.9 # 생존율 90%
+
+# 총 흡수량 적용 (면적, 밀도, 생존율)
+gross_absorption = total_gross_curve * area_ha * density_ratio * 0.9 # 생존율 90% 반영
 
 # 2) Net Absorption (순 흡수량) - 방법론 적용
 # Net = Gross * (1 - 사업배출 - 버퍼)
 net_absorption = gross_absorption * (1 - project_emission_rate - buffer_rate)
 
-# 데이터프레임
+# 데이터프레임 생성
 df_sim = pd.DataFrame({
     'year': range(2026, 2026 + sim_years),
     'gross_t': gross_absorption,
@@ -147,7 +168,7 @@ df_sim = pd.DataFrame({
 df_sim['cum_net'] = df_sim['net_t'].cumsum()
 df_sim['cum_gross'] = df_sim['gross_t'].cumsum()
 
-# 재무 계산 (Net 기준 수익)
+# 재무 계산 (수익은 Net 기준)
 price_base = df_price['price_base'].values[:sim_years]
 if len(price_base) < sim_years:
      price_base = np.pad(price_base, (0, sim_years - len(price_base)), 'edge')
@@ -161,7 +182,7 @@ df_sim.loc[0, 'cost'] += initial_cost
 df_sim['net_cashflow'] = df_sim['revenue'] - df_sim['cost']
 df_sim['cum_cashflow'] = df_sim['net_cashflow'].cumsum()
 
-# NPV & ROI
+# NPV & ROI 계산
 df_sim['discount_factor'] = 1 / ((1 + discount_rate) ** np.arange(sim_years))
 df_sim['pv'] = df_sim['net_cashflow'] * df_sim['discount_factor']
 npv = df_sim['pv'].sum()
@@ -170,7 +191,11 @@ roi = (df_sim['net_cashflow'].sum() / (initial_cost + maintenance_cost * sim_yea
 # -----------------------------------------------------------
 # 5. 대시보드 (UI Output)
 # -----------------------------------------------------------
-st.title(f"📊 {', '.join(selected_names[:2])} NbS 투자 시뮬레이터")
+species_title = ", ".join(selected_names[:2])
+if len(selected_names) > 2:
+    species_title += f" 외 {len(selected_names)-2}종"
+
+st.title(f"📊 {species_title} NbS 투자 시뮬레이터")
 st.markdown(f"**조건:** {area_ha}ha | 밀도 {density_ratio*100:.0f}% | 차감율(배출+버퍼) {(project_emission_rate+buffer_rate)*100:.0f}%")
 
 # KPI Cards
@@ -224,7 +249,7 @@ with tab1:
             
         st.dataframe(df_sim[['year', 'revenue', 'cost', 'net_cashflow']].style.format("{:,.0f}"), height=200)
 
-# Tab 2: ESG Details
+# Tab 2: ESG Details (상세 정보 Expander 포함)
 with tab2:
     selected_ids = df_forest[df_forest['name'].isin(selected_names)]['id'].values
     selected_benefits = df_benefit[df_benefit['id'].isin(selected_ids)]
@@ -249,6 +274,7 @@ with tab2:
         if len(selected_names) > 1:
             st.success(f"✅ **다층 식재 효과:** {len(selected_names)}종 혼합으로 생태 가치가 강화되었습니다.")
 
+        # [상세 정보 Expander 복구]
         with st.expander("ℹ️ 수종별 생태적 특성 상세 보기", expanded=True):
             for idx, row in selected_benefits.iterrows():
                 st.markdown(f"**🌲 {row['name']}**")
