@@ -50,12 +50,24 @@ if df_forest is None:
 with st.sidebar:
     st.header("🎛️ 시뮬레이션 조건 설정")
     
-    # A. 기본 설정
+    # A. 기본 설정 (식재 밀도 추가됨)
     st.subheader("1. 사업 개요")
     species_name = st.selectbox("수종 선택", df_forest['name'], index=6) # 상수리나무 기본
     species_id = df_forest[df_forest['name'] == species_name]['id'].values[0]
-    area_ha = st.number_input("부지 면적 (ha)", value=10.0, step=0.1)
+    
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        area_ha = st.number_input("부지 면적 (ha)", value=10.0, step=0.1)
+    with col_input2:
+        # [NEW] 식재 밀도 기능
+        density_ratio = st.number_input("식재 밀도 (%)", value=100, step=10, help="산림청 표준(3,000본/ha) 대비 식재 비율. 공원형은 50% 이하 권장") / 100
+
     sim_years = st.slider("사업 기간 (년)", 10, 40, 30)
+
+    # [NEW] 예상 식재 본수 계산 (표준: ha당 3,000그루 가정)
+    standard_density_per_ha = 3000 
+    estimated_trees = int(area_ha * standard_density_per_ha * density_ratio)
+    st.caption(f"🌲 예상 식재 본수: 약 **{estimated_trees:,.0f} 그루**")
 
     # B. 물리적 리스크 (Survival)
     st.subheader("2. 리스크 변수 (Risk)")
@@ -77,9 +89,11 @@ with st.sidebar:
 # -----------------------------------------------------------
 # 4. 시뮬레이션 엔진 계산
 # -----------------------------------------------------------
-# A. 탄소 흡수량 (물리적 변수 적용)
+# A. 탄소 흡수량 (물리적 변수 + 밀도 적용)
 raw_growth = interpolate_growth(df_forest, species_id, sim_years)
-adjusted_growth = raw_growth * area_ha * survival_rate # 생존율 반영
+
+# [CORE LOGIC] 면적 * 생존율 * 식재밀도 적용
+adjusted_growth = raw_growth * area_ha * survival_rate * density_ratio 
 
 df_sim = pd.DataFrame({
     'year': range(2026, 2026 + sim_years),
@@ -116,13 +130,13 @@ roi = (df_sim['net_cashflow'].sum() / (initial_cost + maintenance_cost * sim_yea
 # 5. 대시보드 출력
 # -----------------------------------------------------------
 st.title(f"📊 {species_name} NbS 투자 시뮬레이터")
-st.markdown(f"**조건:** {area_ha}ha 식재 | 생존율 {survival_rate*100:.0f}% | 할인율 {discount_rate*100:.1f}%")
+st.markdown(f"**조건:** {area_ha}ha 식재 (밀도 {density_ratio*100:.0f}%) | 생존율 {survival_rate*100:.0f}% | 할인율 {discount_rate*100:.1f}%")
 
 # KPI Cards
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("총 탄소 흡수량", f"{df_sim['cum_absorption'].iloc[-1]:,.0f} tCO₂", 
-              delta=f"생존율 리스크 -{(1-survival_rate)*100:.0f}% 반영", delta_color="inverse")
+              delta=f"식재본수 약 {estimated_trees:,.0f}주", delta_color="inverse")
 with col2:
     st.metric("총 매출액 (Revenue)", f"{df_sim['revenue'].sum()/100000000:.2f} 억원", 
               delta=f"가격조정 {price_adj*100:+.1f}%")
@@ -171,12 +185,11 @@ with tab2:
         """)
         st.info(f"ℹ️ **생태적 근거:** {b_info['logic_note']}")
 
-    # --- [추가된 부분] 승용차 상쇄 효과 시각화 ---
+    # [NEW] 승용차 상쇄 효과 시각화
     with c2:
         st.markdown("### 🚗 생활 속 체감 효과")
         
         # 로직: 국립산림과학원 기준 승용차 1대 연간 배출량 = 약 2.4톤
-        # 시뮬레이션된 숲의 '연평균' 흡수량을 기준으로 계산
         avg_absorption = df_sim['absorption_t'].mean()
         cars_offset = avg_absorption / 2.4
         
@@ -187,6 +200,7 @@ with tab2:
             help="출처: 국립산림과학원 「주요 산림수종의 표준탄소흡수량」 (승용차 연평균 주행거리 15,000km 기준)"
         )
 
-        # 간단한 막대 그래프로 표현 (자동차 아이콘 느낌)
-        st.caption(f"이 숲({area_ha}ha)은 매년 승용차 **{int(cars_offset)}대**가 뿜어내는 탄소를 0으로 만듭니다.")
-        st.progress(min(1.0, cars_offset / 100)) # 100대 기준 게이지 바 (예시)
+        st.caption(f"이 숲({area_ha}ha, 밀도 {density_ratio*100:.0f}%)은 매년 승용차 **{int(cars_offset)}대**가 뿜어내는 탄소를 0으로 만듭니다.")
+        # Progress Bar Logic: 100대 이상이면 꽉 찬 걸로 표시
+        prog_val = min(1.0, cars_offset / 100)
+        st.progress(prog_val)
