@@ -24,18 +24,34 @@ st.markdown("""
 @st.cache_data
 def load_data():
     try:
+        # CSV 파일들이 같은 폴더에 있어야 합니다.
         forest = pd.read_csv('forest_data_2026.csv')
         price = pd.read_csv('carbon_price_scenarios.csv')
         benefit = pd.read_csv('co_benefits.csv')
         return forest, price, benefit
     except FileNotFoundError:
-        st.error("데이터 파일을 찾을 수 없습니다. (forest_data_2026.csv 등)")
+        st.error("❌ 데이터 파일을 찾을 수 없습니다. (forest_data_2026.csv 등)")
         return None, None, None
 
 def interpolate_growth(forest_df, species_id, years=30):
+    """
+    선택된 수종의 5년 단위 데이터를 연 단위로 선형 보간(Interpolation)합니다.
+    """
     species_data = forest_df[forest_df['id'] == species_id].iloc[0]
+    # 데이터 포인트: 0년부터 5년 단위 (CSV 컬럼명에 맞춰 조정 필요)
+    # 현재 CSV 구조가 co2_yr_0, co2_yr_10... 형태라면 아래 리스트 조정
     x_points = [0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70]
-    y_points = [0] + [species_data[f'co2_yr_{y}'] for y in x_points[1:]]
+    
+    # 해당 수종의 데이터 가져오기
+    y_points = [0] # 0년차는 0
+    for y in x_points[1:]:
+        col_name = f'co2_yr_{y}'
+        if col_name in species_data:
+            y_points.append(species_data[col_name])
+        else:
+            y_points.append(y_points[-1]) # 데이터 없으면 이전 값 유지
+
+    # 보간 함수 생성
     f = interp1d(x_points, y_points, kind='linear', fill_value="extrapolate")
     return f(np.arange(1, years + 1))
 
@@ -50,17 +66,31 @@ if df_forest is None:
 with st.sidebar:
     st.header("🎛️ 시뮬레이션 조건 설정")
     
-    # A. 기본 설정 (식재 밀도 추가됨)
+    # A. 기본 설정 (혼효림 + 밀도)
     st.subheader("1. 사업 개요")
-    species_name = st.selectbox("수종 선택", df_forest['name'], index=6) # 상수리나무 기본
-    species_id = df_forest[df_forest['name'] == species_name]['id'].values[0]
+    
+    # [NEW] 다중 선택 기능 (Multiselect)
+    selected_names = st.multiselect(
+        "식재 수종 선택 (혼효림 조성)", 
+        options=df_forest['name'],
+        default=['상수리나무', '백합나무'], # 기본값 2개
+        max_selections=5,
+        help="여러 수종을 선택하면 면적을 균등하게 분할하여 식재한다고 가정합니다. (예: 교목 + 관목 혼합 식재)"
+    )
+    
+    if not selected_names:
+        st.warning("최소 1개 이상의 수종을 선택해주세요.")
+        st.stop()
+
+    # 선택된 수종들의 ID 추출
+    selected_ids = df_forest[df_forest['name'].isin(selected_names)]['id'].values
     
     col_input1, col_input2 = st.columns(2)
     with col_input1:
         area_ha = st.number_input("부지 면적 (ha)", value=10.0, step=0.1)
     with col_input2:
-        # [NEW] 식재 밀도 기능
-        density_ratio = st.number_input("식재 밀도 (%)", value=100, step=10, help="산림청 표준(3,000본/ha) 대비 식재 비율. 공원형은 50% 이하 권장") / 100
+        # [NEW] 식재 밀도
+        density_ratio = st.number_input("식재 밀도 (%)", value=100, step=10, help="산림청 표준(3,000본/ha) 대비 식재 비율. 공원형/가로수는 50% 이하 권장") / 100
 
     sim_years = st.slider("사업 기간 (년)", 10, 40, 30)
 
@@ -87,13 +117,21 @@ with st.sidebar:
     st.caption("Developed by Zigubon Lab")
 
 # -----------------------------------------------------------
-# 4. 시뮬레이션 엔진 계산
+# 4. 시뮬레이션 엔진 계산 (Core Logic)
 # -----------------------------------------------------------
-# A. 탄소 흡수량 (물리적 변수 + 밀도 적용)
-raw_growth = interpolate_growth(df_forest, species_id, sim_years)
+# A. 탄소 흡수량 (혼효림 로직 적용)
+# 로직: 선택된 모든 수종의 성장 곡선을 합산한 뒤, 수종 개수(N)로 나누어 평균 곡선을 만듦
+combined_growth = np.zeros(sim_years)
 
-# [CORE LOGIC] 면적 * 생존율 * 식재밀도 적용
-adjusted_growth = raw_growth * area_ha * survival_rate * density_ratio 
+for s_id in selected_ids:
+    g_curve = interpolate_growth(df_forest, s_id, sim_years)
+    combined_growth += g_curve
+
+# 평균 흡수량 곡선 (tCO2/ha/yr)
+avg_growth_curve = combined_growth / len(selected_names)
+
+# [최종 흡수량] = 평균곡선 * 면적 * 생존율 * 식재밀도
+adjusted_growth = avg_growth_curve * area_ha * survival_rate * density_ratio 
 
 df_sim = pd.DataFrame({
     'year': range(2026, 2026 + sim_years),
@@ -102,8 +140,8 @@ df_sim = pd.DataFrame({
 })
 df_sim['cum_absorption'] = df_sim['absorption_t'].cumsum()
 
-# B. 재무 분석 (경제적 변수 적용)
-# 가격 데이터 매핑 (부족하면 마지막 값으로 채움)
+# B. 재무 분석 (Financial Engine)
+# 가격 데이터 매핑
 price_base = df_price['price_base'].values
 if len(price_base) < sim_years:
     price_base = np.pad(price_base, (0, sim_years - len(price_base)), 'edge')
@@ -120,32 +158,37 @@ df_sim.loc[0, 'cost'] += initial_cost # 첫해 초기비용 추가
 df_sim['net_cashflow'] = df_sim['revenue'] - df_sim['cost']
 df_sim['cum_cashflow'] = df_sim['net_cashflow'].cumsum()
 
-# NPV 계산
+# NPV & ROI 계산
 df_sim['discount_factor'] = 1 / ((1 + discount_rate) ** np.arange(sim_years))
 df_sim['pv'] = df_sim['net_cashflow'] * df_sim['discount_factor']
 npv = df_sim['pv'].sum()
 roi = (df_sim['net_cashflow'].sum() / (initial_cost + maintenance_cost * sim_years)) * 100
 
 # -----------------------------------------------------------
-# 5. 대시보드 출력
+# 5. 대시보드 출력 (Dashboard Layout)
 # -----------------------------------------------------------
-st.title(f"📊 {species_name} NbS 투자 시뮬레이터")
+# 타이틀: 수종 이름들을 나열
+species_title = ", ".join(selected_names)
+if len(selected_names) > 3:
+    species_title = f"{selected_names[0]} 외 {len(selected_names)-1}종"
+
+st.title(f"📊 {species_title} NbS 투자 시뮬레이터")
 st.markdown(f"**조건:** {area_ha}ha 식재 (밀도 {density_ratio*100:.0f}%) | 생존율 {survival_rate*100:.0f}% | 할인율 {discount_rate*100:.1f}%")
 
 # KPI Cards
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("총 탄소 흡수량", f"{df_sim['cum_absorption'].iloc[-1]:,.0f} tCO₂", 
-              delta=f"식재본수 약 {estimated_trees:,.0f}주", delta_color="inverse")
+              delta=f"{len(selected_names)}종 혼합 식재", delta_color="inverse")
 with col2:
     st.metric("총 매출액 (Revenue)", f"{df_sim['revenue'].sum()/100000000:.2f} 억원", 
               delta=f"가격조정 {price_adj*100:+.1f}%")
 with col3:
     st.metric("순현재가치 (NPV)", f"{npv/100000000:.2f} 억원", 
-              help="미래의 현금흐름을 현재 가치로 환산한 값. 0보다 크면 투자 가치 있음.")
+              help="미래의 현금흐름을 현재 가치로 환산한 값. (+)면 투자 가치 있음.")
 with col4:
     color = "normal" if roi > 0 else "inverse"
-    st.metric("투자 수익률 (ROI)", f"{roi:.1f} %", delta="BEP(손익분기) 달성 여부 확인", delta_color=color)
+    st.metric("투자 수익률 (ROI)", f"{roi:.1f} %", delta="BEP(손익분기) 체크", delta_color=color)
 
 # Tabs
 tab1, tab2 = st.tabs(["📈 재무/수익성 분석", "🌿 탄소/ESG 분석"])
@@ -166,26 +209,38 @@ with tab1:
         if npv > 0:
             st.success(f"**투자 적격 (Positive NPV)**\n\n이 프로젝트는 현재 가치 기준으로 **약 {npv/1000000:,.0f}백만원**의 초과 이익을 창출합니다.")
         else:
-            st.error(f"**투자 주의 (Negative NPV)**\n\n현재 조건에서는 비용이 수익보다 큽니다. 초기 비용을 줄이거나 탄소 가격 상승을 기다려야 합니다.")
+            st.error(f"**투자 주의 (Negative NPV)**\n\n현재 비용이 수익보다 큽니다. 초기 비용 절감이나 탄소 가격 상승이 필요합니다.")
         
         st.dataframe(df_sim[['year', 'revenue', 'cost', 'net_cashflow']].style.format("{:,.0f}"), height=300)
 
 with tab2:
-    # ESG Data Logic
-    b_info = df_benefit[df_benefit['id'] == species_id].iloc[0]
+    # ESG Data Logic (혼효림 평균 계산)
+    selected_benefits = df_benefit[df_benefit['id'].isin(selected_ids)]
+    
+    # 여러 수종의 점수를 평균내서 보여줌
+    avg_bio = selected_benefits['biodiversity_index'].mean()
+    avg_water = selected_benefits['water_index'].mean()
+    avg_fire = selected_benefits['fire_resistance'].mean()
     
     st.subheader("ESG Impact & Co-benefits")
     c1, c2 = st.columns(2)
     
     with c1:
         st.markdown(f"""
-        - **생물다양성 지수:** ⭐ {b_info['biodiversity_index']} / 5.0
-        - **수원 함양 기능:** 💧 {b_info['water_index']} / 5.0
-        - **내화성(산불저항):** 🔥 {b_info['fire_resistance']} / 3.0
+        - **생물다양성 지수:** ⭐ {avg_bio:.1f} / 5.0
+        - **수원 함양 기능:** 💧 {avg_water:.1f} / 5.0
+        - **내화성(산불저항):** 🔥 {avg_fire:.1f} / 3.0
         """)
-        st.info(f"ℹ️ **생태적 근거:** {b_info['logic_note']}")
+        
+        # 혼효림 보너스 메시지
+        if len(selected_names) > 1:
+            st.success(f"✅ **혼효림(Mixed Forest) 효과:**\n\n{len(selected_names)}종 이상의 수종을 혼합 식재하여, 단일 수종 대비 병해충 저항성과 생태계 복원력이 강화되었습니다.")
+            
+        with st.expander("ℹ️ 수종별 생태적 특성 상세 보기"):
+            for idx, row in selected_benefits.iterrows():
+                st.write(f"**{row['name']}:** {row['logic_note']}")
 
-    # [NEW] 승용차 상쇄 효과 시각화
+    # [승용차 상쇄 효과]
     with c2:
         st.markdown("### 🚗 생활 속 체감 효과")
         
@@ -200,7 +255,7 @@ with tab2:
             help="출처: 국립산림과학원 「주요 산림수종의 표준탄소흡수량」 (승용차 연평균 주행거리 15,000km 기준)"
         )
 
-        st.caption(f"이 숲({area_ha}ha, 밀도 {density_ratio*100:.0f}%)은 매년 승용차 **{int(cars_offset)}대**가 뿜어내는 탄소를 0으로 만듭니다.")
-        # Progress Bar Logic: 100대 이상이면 꽉 찬 걸로 표시
-        prog_val = min(1.0, cars_offset / 100)
-        st.progress(prog_val)
+        st.caption(f"이 숲({area_ha}ha)은 매년 승용차 **{int(cars_offset)}대**가 뿜어내는 탄소를 0으로 만듭니다.")
+        
+        # Progress bar (100대 기준)
+        st.progress(min(1.0, cars_offset / 100))
