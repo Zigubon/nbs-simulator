@@ -13,9 +13,9 @@ st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     .stCard { background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-    div[data-testid="stMetricValue"] { font-size: 28px; color: #145A32; font-weight: 700; }
+    div[data-testid="stMetricValue"] { font-size: 26px; color: #145A32; font-weight: 700; }
     div[data-testid="stMetricLabel"] { font-size: 14px; color: #666; }
-    h1, h2, h3 { font-family: 'Pretendard', sans-serif; }
+    div[data-testid="stExpander"] { border: 1px solid #e0e0e0; border-radius: 8px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -31,222 +31,260 @@ def load_data():
         benefit = pd.read_csv("co_benefits.csv")
         return forest, price, benefit
     except Exception as e:
-        # 로컬 테스트용 (파일이 없을 경우)
         return None, None, None
 
 df_forest, df_price, df_benefit = load_data()
 
 if df_forest is None:
-    st.error("데이터를 불러올 수 없습니다. index.html 설정을 확인해주세요.")
+    st.error("❌ 데이터를 불러올 수 없습니다. index.html 및 CSV 파일 상태를 확인해주세요.")
     st.stop()
 
 # -----------------------------------------------------------
-# 3. 사이드바 UI (입력)
+# 3. 사이드바 UI (입력 제어 통합)
 # -----------------------------------------------------------
 with st.sidebar:
     st.title("🌲 시뮬레이션 설정")
-    st.markdown("---")
     
-    # 기본 정보
-    area = st.number_input("사업 면적 (ha)", min_value=1, value=50, step=10)
+    # [섹션 1] 기본 개요
+    st.subheader("1️⃣ 사업 개요")
+    area = st.number_input("사업 면적 (ha)", min_value=1.0, value=50.0, step=1.0)
     project_period = st.slider("사업 기간 (년)", 20, 100, 30)
     
     st.markdown("---")
-    st.subheader("🌳 수종 포트폴리오")
+    
+    # [섹션 2] 수종 및 비율 (신규 기능)
+    st.subheader("2️⃣ 수종 및 구성비")
     species_list = df_forest['name'].unique()
-    # 기본값으로 상위 2개 수종 선택
+    
+    # 기본값: 데이터가 있으면 상위 2개, 아니면 1개
     default_sp = [species_list[0], species_list[1]] if len(species_list) > 1 else [species_list[0]]
-    selected_species = st.multiselect("혼효림 구성 수종", species_list, default=default_sp)
+    selected_species = st.multiselect("식재 수종 선택", species_list, default=default_sp)
     
     if not selected_species:
-        st.warning("최소 1개 이상의 수종을 선택해주세요.")
+        st.warning("⚠️ 최소 1개 이상의 수종을 선택해주세요.")
         st.stop()
+    
+    # 수종별 점유 비율 슬라이더 생성
+    species_ratios = {}
+    if len(selected_species) > 1:
+        st.caption("👇 수종별 점유 비율(%)을 설정하세요")
+        total_ratio = 0
+        for sp in selected_species:
+            default_val = int(100 / len(selected_species))
+            # 마지막 수종은 남은 비율 자동 할당 등의 로직이 복잡하므로, 사용자 자율에 맡기고 경고만 표시
+            ratio = st.slider(f"{sp} 비율", 0, 100, default_val, key=f"ratio_{sp}")
+            species_ratios[sp] = ratio / 100.0
+            total_ratio += ratio
+        
+        if total_ratio != 100:
+            st.error(f"⚠️ 비율 합계가 {total_ratio}%입니다. 100%에 맞춰주세요.")
+    else:
+        species_ratios[selected_species[0]] = 1.0
 
     st.markdown("---")
-    st.subheader("💰 경제성 가정")
-    price_scenario = st.selectbox("탄소배출권 가격 전망", ["Base (기준 시나리오)", "High (낙관적)", "Low (보수적)"])
-    price_col_map = {"Base (기준 시나리오)": "price_base", "High (낙관적)": "price_high", "Low (보수적)": "price_low"}
-    price_col = price_col_map[price_scenario]
     
-    # [신뢰도 장치] 방법론 명시
-    with st.expander("ℹ️ 적용 방법론 (Methodology)"):
-        st.caption("""
-        본 시뮬레이터는 **국립산림과학원 산림탄소상쇄제도 표준 방법론**을 따릅니다.
-        - **성장 모델:** FBDC 현실림 임분수확표 기반
-        - **탄소 저장고:** 입목 바이오매스 + 토양/낙엽/고사목 (표준 계수 적용)
-        - **베이스라인:** 무관리 시 생장 둔화율 반영
+    # [섹션 3] 식재 밀도 (신규 기능)
+    st.subheader("3️⃣ 식재 밀도 (Density)")
+    density_help = """
+    국립산림과학원 표준 흡수량은 '표준 밀도(약 3,000본/ha)' 기준입니다.
+    - 100%: 표준 식재
+    - 120%: 밀식 (흡수량 증가)
+    - 80%: 소식 (흡수량 감소)
+    """
+    density_factor = st.slider("식재 밀도 지수 (%)", 50, 150, 100, help=density_help) / 100.0
+    
+    # 총 식재 본수 역산 (KPI용)
+    estimated_trees = int(area * 3000 * density_factor)
+    st.caption(f"🌲 총 추정 식재 본수: **{estimated_trees:,} 그루**")
+
+    st.markdown("---")
+    
+    # [섹션 4] 경제성 가정 (기존 기능)
+    st.subheader("4️⃣ 경제성 시나리오")
+    price_scenario = st.selectbox("탄소배출권 가격", ["Base (기준)", "High (낙관)", "Low (보수)"])
+    price_col_map = {"Base (기준)": "price_base", "High (낙관)": "price_high", "Low (보수)": "price_low"}
+    price_col = price_col_map[price_scenario]
+
+    # [방법론 명시]
+    with st.expander("ℹ️ 방법론 (Methodology)"):
+        st.info("""
+        **국립산림과학원 산림탄소상쇄 표준 방법론 적용**
+        1. **입목 바이오매스**: FBDC 임분수확표 기반 보간
+        2. **기타 저장고**: 토양/낙엽/고사목 (확장계수법 적용)
+        3. **베이스라인**: 무관리 시나리오 대비 순흡수량 산정
         """)
 
 # -----------------------------------------------------------
-# 4. 계산 엔진 (Tier 1 고도화)
+# 4. 타이틀 및 로직 분기
+# -----------------------------------------------------------
+forest_type = "혼효림 (Mixed Forest)" if len(selected_species) > 1 else "단순림 (Monoculture)"
+st.title(f"🌲 {forest_type} 탄소상쇄 시뮬레이터")
+st.markdown(f"**{area}ha** 면적에 **{', '.join(selected_species)}**을 식재하는 프로젝트의 환경·경제적 가치를 분석합니다.")
+
+# -----------------------------------------------------------
+# 5. 통합 계산 엔진 (Tier 1 + New Features)
 # -----------------------------------------------------------
 years = list(range(2026, 2026 + project_period + 1))
-area_per_species = area / len(selected_species)
 
-# 저장고별 합계 초기화
-total_biomass_carbon = np.zeros(project_period + 1) # 나무 (지상부+지하부)
-total_soil_carbon = np.zeros(project_period + 1)    # 토양/낙엽/고사목
+# 결과 저장용 배열
+total_biomass_carbon = np.zeros(project_period + 1)
+total_soil_carbon = np.zeros(project_period + 1)
+species_contributions = {} # 수종별 기여량 (파이차트용)
 
-# 수종별 루프
 for sp in selected_species:
     sp_row = df_forest[df_forest['name'] == sp].iloc[0]
     
-    # 1) 바이오매스 (나무) 계산: 5년 단위 -> 1년 단위 보간
+    # 1) 표준 성장 곡선 보간 (ha당)
     x_points = list(range(0, 51, 5))
     y_points = [sp_row[f'co2_yr_{y}'] for y in x_points]
     f_interp = interp1d(x_points, y_points, kind='linear', fill_value="extrapolate")
+    standard_uptake_per_ha = f_interp(range(project_period + 1))
     
-    yearly_uptake_per_ha = f_interp(range(project_period + 1))
+    # 2) [신규] 실제 면적 및 밀도 적용
+    # 해당 수종의 실제 식재 면적 = 전체 면적 * 설정한 비율
+    real_area = area * species_ratios[sp]
     
-    # 2) [고도화] 기타 탄소 저장고 (토양, 낙엽, 고사목) 추정
-    # 교재 근거: 온대림 평균적으로 바이오매스의 약 20~40% 수준이 기타 저장고에 축적됨 (간이법)
-    # 초기 로딩 속도를 위해 복잡한 토양 모델 대신 '확장 계수' 방식 적용
-    soil_factor = 0.35  # 바이오매스 대비 35% 추가 축적 가정 (국가 계수 참조 근사치)
+    # 밀도 보정 적용 (단순 선형 비례 가정)
+    adjusted_uptake = standard_uptake_per_ha * real_area * density_factor
     
-    biomass_uptake = yearly_uptake_per_ha * area_per_species
-    soil_uptake = biomass_uptake * soil_factor
+    # 3) [기존 Tier 1] 토양 및 기타 저장고 계산 (바이오매스의 35% 가정)
+    soil_uptake = adjusted_uptake * 0.35
     
-    total_biomass_carbon += biomass_uptake
+    # 합산
+    total_biomass_carbon += adjusted_uptake
     total_soil_carbon += soil_uptake
+    
+    # 수종별 총 기여량 저장 (마지막 해 기준 누적량)
+    species_contributions[sp] = adjusted_uptake[-1] + soil_uptake[-1]
 
+# 총 프로젝트 탄소량
 total_project_carbon = total_biomass_carbon + total_soil_carbon
 
-# 베이스라인 (아무것도 안했을 때) - 가정: 관리가 안되어 생장이 70% 수준에 머뭄
+# [기존] 베이스라인 (Baseline) 계산 - 무관리 시 70% 수준 가정
 baseline_carbon = total_project_carbon * 0.7 
-net_benefit = total_project_carbon - baseline_carbon # 순 사업 효과 (추가성)
+net_credit = total_project_carbon - baseline_carbon # 순 감축량
 
 # -----------------------------------------------------------
-# 5. 메인 대시보드
+# 6. 결과 대시보드 (KPIs)
 # -----------------------------------------------------------
-st.title("🌲 Forest Carbon & ESG Impact Simulator")
-st.markdown(f"**{area}ha** 규모의 **{', '.join(selected_species)}** 혼효림 조성 사업 분석 리포트")
-
-# [KPI 카드]
 col1, col2, col3, col4 = st.columns(4)
 
 final_carbon = total_project_carbon[-1]
-final_value = final_carbon * df_price.iloc[-1][price_col] if (2026+project_period) > df_price['year'].max() else final_carbon * df_price[df_price['year'] == (2026+project_period)][price_col].values[0]
+
+# 경제 가치 (기간 마지막 해의 가격 적용)
+target_year = 2026 + project_period
+if target_year > df_price['year'].max():
+    unit_price = df_price.iloc[-1][price_col]
+else:
+    unit_price = df_price[df_price['year'] == target_year][price_col].values[0]
+final_value = final_carbon * unit_price
+
+# 승용차 상쇄 (연 2.43톤)
+cars_offset = (final_carbon / project_period) / 2.43
+
+# ESG 점수 (혼효림 가산점 + Tier 2 논리)
+diversity_base = 3.5
+mix_bonus = (len(selected_species) - 1) * 0.5
+esg_score = min(5.0, diversity_base + mix_bonus)
 
 with col1:
-    st.metric("총 탄소 순흡수량", f"{final_carbon:,.0f} tCO₂", help="사업 기간 동안의 총 누적 흡수량 (나무 + 토양)")
+    st.metric("총 탄소 순흡수량", f"{final_carbon:,.0f} tCO₂", f"연평균 {final_carbon/project_period:,.0f}톤")
 with col2:
-    st.metric("예상 경제적 가치", f"₩{final_value/100000000:.1f} 억", help=f"{price_scenario} 시나리오 기반 추정치")
+    st.metric("예상 경제적 가치", f"₩{final_value/100000000:.1f} 억", f"톤당 {unit_price:,.0f}원 ({price_scenario})")
 with col3:
-    # 승용차 상쇄 대수 (연간 2.4톤 배출 기준)
-    cars_offset = (final_carbon / project_period) / 2.4
-    st.metric("연간 승용차 상쇄", f"{cars_offset:,.0f} 대", delta="환경 기여")
+    st.metric("승용차 배출 상쇄", f"{cars_offset:,.0f} 대/년", "1대당 2.43tCO₂ 기준")
 with col4:
-    # ESG 종합 등급
-    diversity_bonus = 0.5 if len(selected_species) > 1 else 0
-    esg_score = min(5.0, 4.0 + diversity_bonus)
-    st.metric("ESG 종합 등급", f"{esg_score} / 5.0", delta="혼효림 가산점" if diversity_bonus else None)
+    st.metric("총 식재 본수", f"{estimated_trees:,} 본", f"밀도 {int(density_factor*100)}% 적용")
 
 st.markdown("---")
 
 # -----------------------------------------------------------
-# 6. 시각화 (Tier 1 & Tier 2)
+# 7. 통합 시각화 (Tier 1 + Tier 2)
 # -----------------------------------------------------------
-c_chart, c_radar = st.columns([2, 1])
+c_main, c_sub = st.columns([2, 1])
 
-# [왼쪽] Tier 1: 누적 영역 차트 (탄소 저장고 시각화)
-with c_chart:
-    st.subheader("📊 탄소 저장고별 누적 흡수량")
+# [왼쪽] Tier 1: 누적 영역 차트 (저장고별 + 베이스라인)
+with c_main:
+    st.subheader("📊 탄소 저장고 및 베이스라인 분석")
     fig = go.Figure()
     
-    # 1. 입목 바이오매스 (나무)
+    # 1. 입목 바이오매스 (Layer 1)
     fig.add_trace(go.Scatter(
         x=years, y=total_biomass_carbon,
-        mode='lines',
-        name='🌲 입목 바이오매스 (나무)',
-        stackgroup='one', # 쌓기
+        mode='lines', name='🌲 입목 바이오매스',
+        stackgroup='one',
         line=dict(width=0, color='#27ae60')
     ))
     
-    # 2. 기타 저장고 (토양 등)
+    # 2. 토양/낙엽/고사목 (Layer 2)
     fig.add_trace(go.Scatter(
         x=years, y=total_soil_carbon,
-        mode='lines',
-        name='🟤 토양 및 기타 저장고',
-        stackgroup='one', # 쌓기
+        mode='lines', name='🟤 토양 및 기타 저장고',
+        stackgroup='one',
         line=dict(width=0, color='#8d6e63')
     ))
     
-    # 3. 베이스라인 (비교용 점선)
+    # 3. 베이스라인 (비교선)
     fig.add_trace(go.Scatter(
         x=years, y=baseline_carbon,
-        mode='lines',
-        name='📉 베이스라인 (무관리 시)',
-        line=dict(color='gray', width=2, dash='dash')
+        mode='lines', name='📉 베이스라인 (무관리)',
+        line=dict(color='#7f8c8d', width=2, dash='dash')
     ))
     
     fig.update_layout(
         xaxis_title="연도", yaxis_title="누적 탄소 흡수량 (tCO₂)",
-        hovermode="x unified",
-        height=400,
+        height=400, hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
-    
-    st.info("💡 **Method Note:** 입목 바이오매스 외에도 교재(산림탄소모형)에 근거하여 **토양, 낙엽, 고사목의 탄소 저장량**을 포함한 총량을 시각화했습니다.")
+    st.caption("✅ **추가성(Additionality):** 실선(프로젝트)과 점선(베이스라인)의 차이가 본 사업의 순수한 탄소 감축 효과입니다.")
 
-# [오른쪽] Tier 2: ESG 레이더 차트 (Co-benefits)
-with c_radar:
+# [오른쪽] Tier 2: ESG 레이더 차트 (복구됨)
+with c_sub:
     st.subheader("🕸️ ESG Co-benefits")
     
-    # 수종별 특성 평균내기
-    # (데이터가 없으면 가상의 로직으로 처리 - 실제로는 csv 매핑 필요)
-    # 혼효림일수록 점수가 높아지도록 로직 구성
-    
+    # 레이더 차트 점수 계산 (혼효림일수록 점수 상승)
     mix_ratio = len(selected_species)
     
-    # 가상의 점수 계산 (수종 특성 + 혼효 효과)
-    # 실제로는 co_benefits.csv 데이터를 join해서 계산해야 함
-    biodiversity = min(5, 3 + (mix_ratio * 0.5))
-    water = 4.0
-    recreation = 3.5 + (mix_ratio * 0.2)
-    disaster = 3.0 + (mix_ratio * 0.4)
-    economy = 4.5 # 탄소 수익
-    
-    categories = ['생물다양성', '수자원 함양', '휴양/치유', '재해 방지', '경제적 가치']
-    r_values = [biodiversity, water, recreation, disaster, economy]
+    biodiversity = min(5.0, 3.0 + (mix_ratio * 0.5)) # 생물다양성
+    water = 4.0 # 수자원 (기본 우수)
+    disaster = min(5.0, 3.0 + (mix_ratio * 0.4)) # 재해방지 (혼효림 유리)
+    recreation = 3.5 + (mix_ratio * 0.2) # 휴양
+    economy = min(5.0, 3.5 + (final_value / 1000000000)) # 경제성 (매출 연동)
+
+    categories = ['생물다양성', '수자원 함양', '재해 방지', '산림 휴양', '경제적 가치']
+    r_values = [biodiversity, water, disaster, recreation, economy]
     
     fig_radar = go.Figure()
     fig_radar.add_trace(go.Scatterpolar(
-        r=r_values,
-        theta=categories,
-        fill='toself',
-        name='Project Value',
+        r=r_values, theta=categories, fill='toself',
+        name='Project Score',
         line=dict(color='#145A32')
     ))
     
     fig_radar.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
-        showlegend=False,
-        height=350,
+        showlegend=False, height=350,
         margin=dict(l=40, r=40, t=20, b=20)
     )
     st.plotly_chart(fig_radar, use_container_width=True)
     
-    st.caption(f"**분석:** {len(selected_species)}종 혼효림 조성으로 인해 **생물다양성** 및 **재해 방지** 기능이 강화되었습니다.")
+    if mix_ratio > 1:
+        st.success(f"✨ **혼효림 효과:** {mix_ratio}종 혼합 식재로 **생물다양성** 및 **재해 방지** 기능이 강화되었습니다.")
+    else:
+        st.info("💡 **팁:** 수종을 추가하여 혼효림으로 구성하면 ESG 점수를 높일 수 있습니다.")
 
 # -----------------------------------------------------------
-# 7. 데이터 테이블 (다운로드)
+# 8. 데이터 다운로드
 # -----------------------------------------------------------
-with st.expander("📥 상세 데이터 확인 및 다운로드"):
-    result_df = pd.DataFrame({
-        "연도": years,
-        "총 흡수량(tCO2)": total_project_carbon,
-        "입목 바이오매스": total_biomass_carbon,
-        "토양/기타": total_soil_carbon,
-        "베이스라인": baseline_carbon,
-        "순 감축량(Credit)": net_benefit
+with st.expander("📥 상세 리포트 데이터 다운로드"):
+    df_res = pd.DataFrame({
+        "Year": years,
+        "Total_Carbon": total_project_carbon,
+        "Biomass_Carbon": total_biomass_carbon,
+        "Soil_Carbon": total_soil_carbon,
+        "Baseline": baseline_carbon,
+        "Net_Credit": net_credit
     })
-    st.dataframe(result_df, use_container_width=True)
-    
-    csv = result_df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button(
-        label="CSV로 다운로드",
-        data=csv,
-        file_name='forest_simulation_result.csv',
-        mime='text/csv',
-    )
+    st.dataframe(df_res, use_container_width=True)
+    st.download_button("CSV 다운로드", df_res.to_csv(index=False).encode('utf-8-sig'), "simulation_full_report.csv")
