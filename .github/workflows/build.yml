@@ -1,0 +1,36 @@
+name: Build Forest Report
+
+on:
+  push:
+    branches: [ "main" ] # 코드 수정할 때마다 실행
+  schedule:
+    - cron: '0 23 * * *' # 매일 아침 8시 자동 실행
+  workflow_dispatch:      # 수동 실행 버튼
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas plotly
+
+      - name: Run Report Generator
+        run: python daily_report.py
+
+      - name: Commit & Push HTML
+        run: |
+          git config --global user.name 'GitHub Action Bot'
+          git config --global user.email 'action@github.com'
+          git add index.html
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Daily Report 🌲" && git push)
