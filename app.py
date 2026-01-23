@@ -40,7 +40,7 @@ if df_forest is None:
     st.stop()
 
 # -----------------------------------------------------------
-# 3. 사이드바 UI (CBI 지표 추가)
+# 3. 사이드바 UI (입력 제어 통합)
 # -----------------------------------------------------------
 with st.sidebar:
     st.title("🌲 시뮬레이션 설정")
@@ -48,15 +48,14 @@ with st.sidebar:
     # [섹션 1] 기본 개요
     st.subheader("1️⃣ 사업 개요")
     area = st.number_input("사업 면적 (ha)", min_value=1.0, value=50.0, step=1.0)
-    project_period = st.slider("사업 기간 (년)", 20, 100, 30)
+    # [수정] 사업 기간 5~50년으로 제한
+    project_period = st.slider("사업 기간 (년)", 5, 50, 30)
     
     st.markdown("---")
     
     # [섹션 2] 수종 및 비율
-    st.subheader("2️⃣ 수종 포트폴리오 (CBI 지표 4)")
+    st.subheader("2️⃣ 수종 및 구성비")
     species_list = df_forest['name'].unique()
-    
-    # 기본값
     default_sp = [species_list[0], species_list[1]] if len(species_list) > 1 else [species_list[0]]
     selected_species = st.multiselect("식재 수종 선택", species_list, default=default_sp)
     
@@ -64,10 +63,9 @@ with st.sidebar:
         st.warning("⚠️ 최소 1개 이상의 수종을 선택해주세요.")
         st.stop()
     
-    # 수종별 비율 슬라이더
     species_ratios = {}
     if len(selected_species) > 1:
-        st.caption("👇 수종별 점유 비율(%)")
+        st.caption("👇 수종별 점유 비율(%) 설정")
         total_ratio = 0
         for sp in selected_species:
             default_val = int(100 / len(selected_species))
@@ -81,50 +79,40 @@ with st.sidebar:
         species_ratios[selected_species[0]] = 1.0
 
     st.markdown("---")
-
-    # [섹션 3] 생태적 연결성 (CBI 지표 2 반영) - 신규 기능
-    st.subheader("3️⃣ 생태 네트워크 (CBI 지표 2)")
-    connectivity_help = """
-    **싱가포르 지수(CBI) 지표 2: 연결성 조치**
-    대상지가 주변 산림이나 생태축과 얼마나 잘 연결되어 있는지를 평가합니다.
-    - 높음: 백두대간 등 핵심 생태축과 직접 연결
-    - 낮음: 도심 속 고립된 숲
-    """
-    connectivity_score = st.select_slider(
-        "주변 생태계 연결성 수준",
-        options=["고립 (낮음)", "일부 연결 (보통)", "핵심 축 연결 (높음)"],
-        value="일부 연결 (보통)",
-        help=connectivity_help
-    )
-    # 점수 매핑 (1~5점)
-    conn_map = {"고립 (낮음)": 1.0, "일부 연결 (보통)": 3.0, "핵심 축 연결 (높음)": 5.0}
-    conn_value = conn_map[connectivity_score]
-
-    # [섹션 4] 식재 밀도
-    st.markdown("---")
-    st.subheader("4️⃣ 식재 밀도 (Density)")
+    
+    # [섹션 3] 식재 밀도
+    st.subheader("3️⃣ 식재 밀도 (Density)")
     density_factor = st.slider("식재 밀도 지수 (%)", 50, 150, 100) / 100.0
     estimated_trees = int(area * 3000 * density_factor)
-    
-    # [섹션 5] 경제성
+    st.caption(f"🌲 총 추정 식재 본수: **{estimated_trees:,} 그루**")
+
     st.markdown("---")
-    st.subheader("5️⃣ 경제성 시나리오")
-    price_scenario = st.selectbox("탄소배출권 가격", ["Base (기준)", "High (낙관)", "Low (보수)"])
+    
+    # [섹션 4] 비용 및 리스크 관리 (신규 기능)
+    st.subheader("4️⃣ 비용 및 리스크 (Financial)")
+    
+    # 버퍼 비율 (리스크 관리용 차감)
+    buffer_ratio = st.slider("버퍼 비율 (Buffer Ratio, %)", 0, 30, 10, help="산불, 병해충 등 영구적 손실 대비를 위해 적립(차감)하는 크레딧 비율입니다.") / 100.0
+    
+    # 비용 입력
+    col_cost1, col_cost2 = st.columns(2)
+    with col_cost1:
+        initial_cost_per_ha = st.number_input("초기 조성비 (만원/ha)", value=1500, step=100, help="묘목비, 식재비 등")
+    with col_cost2:
+        annual_cost_per_ha = st.number_input("연 관리비 (만원/ha)", value=50, step=10, help="풀베기, 모니터링 비용 등")
+
+    # [섹션 5] 탄소 가격
+    st.markdown("---")
+    st.subheader("5️⃣ 탄소 가격 시나리오")
+    price_scenario = st.selectbox("가격 전망", ["Base (기준)", "High (낙관)", "Low (보수)"])
     price_col_map = {"Base (기준)": "price_base", "High (낙관)": "price_high", "Low (보수)": "price_low"}
     price_col = price_col_map[price_scenario]
 
 # -----------------------------------------------------------
-# 4. CBI 기반 분석 로직 (자생종 판단)
+# 4. 타이틀 및 로직
 # -----------------------------------------------------------
-# 한국 산림 기준 자생종(Native) vs 도입종(Exotic/Plantation) 구분 로직
-# (실제로는 DB에 있어야 하지만, 편의상 이름으로 매핑)
-def check_native(name):
-    # 자생종 키워드
-    native_keywords = ["소나무", "상수리", "신갈", "졸참", "굴참", "잣나무"] 
-    # 도입종 키워드 (낙엽송-일본잎갈나무, 편백-일본원산, 리기다-북미원산, 백합-북미원산)
-    if any(k in name for k in native_keywords):
-        return True
-    return False
+forest_type = "혼효림 (Mixed Forest)" if len(selected_species) > 1 else "단순림 (Monoculture)"
+st.title(f"🌲 {forest_type} 사업성 분석 시뮬레이터")
 
 # -----------------------------------------------------------
 # 5. 통합 계산 엔진
@@ -134,16 +122,20 @@ years = list(range(2026, 2026 + project_period + 1))
 total_biomass_carbon = np.zeros(project_period + 1)
 total_soil_carbon = np.zeros(project_period + 1)
 
-# CBI 점수 계산 변수
+# CBI 계산 변수
 total_native_ratio = 0
 weighted_water_score = 0
-weighted_fire_score = 0
+
+# 자생종 구분 함수
+def check_native(name):
+    native_keywords = ["소나무", "상수리", "신갈", "졸참", "굴참", "잣나무"] 
+    return any(k in name for k in native_keywords)
 
 for sp in selected_species:
     sp_row = df_forest[df_forest['name'] == sp].iloc[0]
     ratio = species_ratios[sp]
     
-    # 1. 탄소 계산
+    # 1. 탄소량 계산
     x_points = list(range(0, 51, 5))
     y_points = [sp_row[f'co2_yr_{y}'] for y in x_points]
     f_interp = interp1d(x_points, y_points, kind='linear', fill_value="extrapolate")
@@ -151,120 +143,140 @@ for sp in selected_species:
     
     real_area = area * ratio
     adjusted_uptake = standard_uptake * real_area * density_factor
-    soil_uptake = adjusted_uptake * 0.35 # 토양탄소
+    soil_uptake = adjusted_uptake * 0.35 
     
     total_biomass_carbon += adjusted_uptake
     total_soil_carbon += soil_uptake
     
-    # 2. CBI 지표 계산 (가중 평균)
-    # (1) 자생종 비율 (Indicator 4)
-    is_native = check_native(sp)
-    if is_native:
-        total_native_ratio += ratio * 100 # 자생종이면 해당 비율만큼 점수 추가
+    # 2. CBI 가중치 계산
+    if check_native(sp):
+        total_native_ratio += ratio * 100
         
-    # (2) 수자원 및 재해방지 (Indicator 10)
-    # co_benefits 데이터 매핑 (이름으로 찾기)
     try:
-        # id 매핑 로직이 복잡하므로 순서 기반 가정 or 이름 매핑 시도
-        # 여기선 간단히 id가 1,2,3... 순서대로라고 가정하고 인덱싱 (위험하지만 현재 데이터셋 기준)
-        # 더 안전한 방법: co_benefits.csv에 name 컬럼이 없으므로 id 매핑 필요.
-        # *사용자 데이터 특성상 id 1=상수리, 2=신갈... 순서 일치 가정*
-        ben_row = df_benefit.iloc[sp_row['id']-1] # id는 1부터 시작하므로 -1
+        ben_row = df_benefit.iloc[sp_row['id']-1]
         weighted_water_score += ben_row['water_index'] * ratio
-        weighted_fire_score += ben_row['fire_resistance'] * ratio
     except:
-        weighted_water_score += 3.0 * ratio # 기본값
+        weighted_water_score += 3.0 * ratio
 
+# --- 탄소 크레딧 계산 (버퍼 반영) ---
 total_project_carbon = total_biomass_carbon + total_soil_carbon
-baseline_carbon = total_project_carbon * 0.7
-net_credit = total_project_carbon - baseline_carbon
+baseline_carbon = total_project_carbon * 0.7 
+gross_credit = total_project_carbon - baseline_carbon # 총 감축량
+buffer_amount = gross_credit * buffer_ratio           # 버퍼(차감)
+net_credit = gross_credit - buffer_amount             # 발급 가능 크레딧 (Issuable)
 
 # -----------------------------------------------------------
-# 6. 결과 대시보드
+# 6. 재무(Financial) 분석 엔진 (신규)
 # -----------------------------------------------------------
-final_carbon = total_project_carbon[-1]
+# 1) 비용 (Cost)
+total_initial_cost = initial_cost_per_ha * area * 10000 # 만원 -> 원 환산
+total_annual_cost = annual_cost_per_ha * area * project_period * 10000
+total_cost = total_initial_cost + total_annual_cost
 
+# 2) 수익 (Revenue)
+# 마지막 해의 누적 크레딧 * 마지막 해 가격 (단순화된 모델)
 target_year = 2026 + project_period
 if target_year > df_price['year'].max():
     unit_price = df_price.iloc[-1][price_col]
 else:
     unit_price = df_price[df_price['year'] == target_year][price_col].values[0]
-final_value = final_carbon * unit_price
-cars_offset = (final_carbon / project_period) / 2.43
 
-# [CBI 종합 점수 산출]
-# 1. 자생종 점수 (0~5점): 자생종 비율이 높을수록 5점에 수렴
+total_revenue = net_credit[-1] * unit_price
+
+# 3) 순수익 및 ROI
+net_profit = total_revenue - total_cost
+roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+
+# -----------------------------------------------------------
+# 7. CBI 점수 및 KPI
+# -----------------------------------------------------------
 cbi_native_score = (total_native_ratio / 100.0) * 5.0
-
-# 2. 연결성 점수 (입력값 그대로 사용)
-cbi_conn_score = conn_value
-
-# 3. 수자원 점수 (가중평균)
 cbi_water_score = weighted_water_score
-
-# 4. 혼효림 보너스 (종 다양성)
+cbi_conn_score = 3.0 # 기본값 (입력받지 않음)
 cbi_diversity_score = min(5.0, 2.0 + (len(selected_species) * 0.6))
 
-# 종합 평균
-final_esg_score = (cbi_native_score + cbi_conn_score + cbi_water_score + cbi_diversity_score) / 4.0
+# [경제성 점수 로직 개선] ROI 기반 평가
+# ROI가 0% 이하면 1점, 200% 이상이면 5점 (선형 보간)
+if roi <= 0:
+    cbi_econ_score = 1.0
+elif roi >= 200:
+    cbi_econ_score = 5.0
+else:
+    cbi_econ_score = 1.0 + (roi / 50.0) # 50% 당 1점씩 증가
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("총 탄소 순흡수량", f"{final_carbon:,.0f} tCO₂", f"연평균 {final_carbon/project_period:,.0f}톤")
+    st.metric("발급 가능 크레딧", f"{net_credit[-1]:,.0f} Credit", f"버퍼 {buffer_ratio*100}% 차감 후")
 with col2:
-    st.metric("예상 경제적 가치", f"₩{final_value/100000000:.1f} 억", f"{price_scenario} 시나리오")
+    st.metric("예상 순수익 (Net Profit)", f"₩{net_profit/100000000:.1f} 억", f"ROI {roi:.1f}%")
 with col3:
-    st.metric("승용차 배출 상쇄", f"{cars_offset:,.0f} 대/년", "연 2.43tCO₂ 기준")
+    st.metric("총 사업 비용", f"₩{total_cost/100000000:.1f} 억", f"초기투자 + {project_period}년 관리비")
 with col4:
-    st.metric("CBI 기반 생물다양성", f"{final_esg_score:.1f} / 5.0", "싱가포르 지수 적용")
+    st.metric("CBI 경제성 등급", f"{cbi_econ_score:.1f} / 5.0", f"ROI 기반 평가")
 
 st.markdown("---")
 
 # -----------------------------------------------------------
-# 7. 시각화 (CBI 레이더 차트 적용)
+# 8. 시각화 (수정됨: 범례 이동 및 경제성 차트 추가)
 # -----------------------------------------------------------
 c_main, c_sub = st.columns([2, 1])
 
 with c_main:
-    st.subheader("📊 탄소 저장고 및 추가성 분석")
+    st.subheader("📊 탄소 저장 및 추가성 (Additionality)")
     fig = go.Figure()
+    
     fig.add_trace(go.Scatter(x=years, y=total_biomass_carbon, mode='lines', name='🌲 입목 바이오매스', stackgroup='one', line=dict(width=0, color='#27ae60')))
     fig.add_trace(go.Scatter(x=years, y=total_soil_carbon, mode='lines', name='🟤 토양/기타 저장고', stackgroup='one', line=dict(width=0, color='#8d6e63')))
-    fig.add_trace(go.Scatter(x=years, y=baseline_carbon, mode='lines', name='📉 베이스라인 (무관리)', line=dict(color='#7f8c8d', width=2, dash='dash')))
-    fig.update_layout(xaxis_title="연도", yaxis_title="누적 tCO₂", height=400, hovermode="x unified", legend=dict(orientation="h", y=1.02, x=1))
+    fig.add_trace(go.Scatter(x=years, y=baseline_carbon, mode='lines', name='📉 베이스라인 (무관리)', line=dict(color='#34495e', width=2, dash='dash')))
+    
+    # [수정] 범례를 그래프 위로 이동하여 가림 현상 방지
+    fig.update_layout(
+        xaxis_title="연도", yaxis_title="누적 tCO₂", 
+        height=400, hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.1, xanchor="center", x=0.5),
+        margin=dict(t=50) # 범례 공간 확보
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 with c_sub:
-    st.subheader("🕸️ CBI 생태 가치 평가")
+    st.subheader("🕸️ CBI 가치 평가")
     
-    categories = ['자생종 비율 (Ind.4)', '수자원 조절 (Ind.10)', '생태 연결성 (Ind.2)', '종 다양성', '경제적 가치']
-    # 경제성 점수 (상대평가)
-    econ_score = min(5.0, final_value / 1000000000 * 2) 
-    
-    r_values = [cbi_native_score, cbi_water_score, cbi_conn_score, cbi_diversity_score, econ_score]
+    categories = ['자생종 비율', '수자원 조절', '생태 연결성', '종 다양성', '경제적 가치(ROI)']
+    r_values = [cbi_native_score, cbi_water_score, cbi_conn_score, cbi_diversity_score, cbi_econ_score]
     
     fig_radar = go.Figure()
     fig_radar.add_trace(go.Scatterpolar(
         r=r_values, theta=categories, fill='toself', name='Project Score',
         line=dict(color='#145A32')
     ))
-    fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])), showlegend=False, height=350, margin=dict(l=40, r=40, t=20, b=20))
+    fig_radar.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+        showlegend=False, height=350,
+        margin=dict(l=40, r=40, t=30, b=20)
+    )
     st.plotly_chart(fig_radar, use_container_width=True)
     
-    # CBI 해석 캡션
-    st.info(f"""
-    **💡 CBI(싱가포르 지수) 분석 결과**
-    - **자생종 비율:** {total_native_ratio:.0f}% (소나무, 참나무류 등 고유 수종 비중)
-    - **연결성:** '{connectivity_score}' 수준으로 평가됨
-    """)
+    # 경제성 평가 방법론 설명
+    with st.expander("💡 경제적 가치 평가 방법론"):
+        st.caption(f"""
+        **ROI(투자대비수익률) 기반 점수 산정**
+        - 현재 ROI: **{roi:.1f}%**
+        - 총 수익: {total_revenue/100000000:.1f}억 (크레딧 판매)
+        - 총 비용: {total_cost/100000000:.1f}억 (조성+관리)
+        - 점수 로직: ROI 0%이하(1점) ~ 200%이상(5점)
+        """)
 
 # -----------------------------------------------------------
-# 8. 데이터 다운로드
+# 9. 데이터 다운로드
 # -----------------------------------------------------------
-with st.expander("📥 상세 리포트 다운로드"):
+with st.expander("📥 상세 리포트 데이터 다운로드"):
     df_res = pd.DataFrame({
-        "Year": years, "Total_Carbon": total_project_carbon, "Biomass": total_biomass_carbon, 
-        "Soil": total_soil_carbon, "Baseline": baseline_carbon, "Net_Credit": net_credit
+        "Year": years,
+        "Total_Project_Carbon": total_project_carbon,
+        "Baseline": baseline_carbon,
+        "Gross_Credit": gross_credit,
+        "Buffer_Deduction": buffer_amount,
+        "Net_Issuable_Credit": net_credit
     })
     st.dataframe(df_res, use_container_width=True)
-    st.download_button("CSV 다운로드", df_res.to_csv(index=False).encode('utf-8-sig'), "cbi_simulation_report.csv")
+    st.download_button("CSV 다운로드", df_res.to_csv(index=False).encode('utf-8-sig'), "simulation_financial_report.csv")
