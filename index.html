@@ -8,39 +8,58 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.50.0/build/stlite.css">
 </head>
 <body>
+  <div id="loader" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:#2c3e50;">
+    <h2 style="margin-bottom:10px;">🌲 숲을 시뮬레이션 중입니다...</h2>
+    <p>필요한 데이터를 불러오고 있습니다. (약 5~10초 소요)</p>
+  </div>
+
   <div id="root"></div>
+  
   <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.50.0/build/stlite.js"></script>
   <script>
-    // 1. 가져올 파일 목록 정의 (깃허브에 올라간 파일명과 정확히 일치해야 함)
-    const filesToFetch = [
+    // 1. 가져와야 할 파일 목록 (파일명 오타 절대 주의!)
+    const fileList = [
       "app.py",
       "forest_data_2026.csv",
       "carbon_price_scenarios.csv",
       "co_benefits.csv"
     ];
 
-    // 2. 파일을 실제로 가져오는 함수
+    // 2. 파일을 강제로 가져오는 함수 (Fetch)
     async function loadFiles() {
       const fileContents = {};
       
-      for (const file of filesToFetch) {
-        const response = await fetch(file);
-        if (!response.ok) {
-          alert(`파일을 불러오지 못했습니다: ${file}\n(깃허브에 파일이 있는지 확인하세요)`);
-          return null;
-        }
-        fileContents[file] = await response.text(); // 파일 내용을 텍스트로 저장
+      try {
+        const promises = fileList.map(async (fileName) => {
+          // GitHub Pages 경로 문제 해결을 위해 현재 경로(./) 명시
+          const response = await fetch(`./${fileName}`);
+          if (!response.ok) throw new Error(`파일을 찾을 수 없습니다: ${fileName}`);
+          const text = await response.text();
+          fileContents[fileName] = text;
+        });
+
+        await Promise.all(promises);
+        return fileContents;
+
+      } catch (error) {
+        document.getElementById("loader").innerHTML = `
+          <h3 style="color:red">⚠️ 오류 발생</h3>
+          <p>${error.message}</p>
+          <p>깃허브 저장소에 파일 이름이 정확한지 확인해주세요.<br>(app_v2.py라면 app.py로 이름을 바꿔주세요)</p>
+        `;
+        return null;
       }
-      return fileContents;
     }
 
-    // 3. 파일 로드 후 stlite 실행
+    // 3. 파일 로드 후 실행
     loadFiles().then(files => {
       if (files) {
+        document.getElementById("loader").style.display = "none";
+        
         stlite.mount({
           requirements: ["streamlit", "pandas", "numpy", "plotly", "scipy"],
-          entrypoint: "app.py", // 시작 파일
-          files: files // 가져온 파일들을 가상 시스템에 입력
+          entrypoint: "app.py",
+          files: files // 가져온 파일 내용들을 가상 파일시스템에 집어넣음
         }, document.getElementById("root"));
       }
     });
