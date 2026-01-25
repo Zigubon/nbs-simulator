@@ -292,14 +292,15 @@ with c_sub:
         st.write(f"- **수익성:** ROI {roi:.1f}%")
         st.write(f"- **연결성:** {connectivity_score}")
 
-# Data Download
+# [Data Download]
 with st.expander("📥 상세 데이터 테이블 다운로드"):
     df_res = pd.DataFrame({
         "Year": years,
         "Total_Carbon": total_project_carbon,
         "Baseline": baseline_carbon,
         "Net_Credit": net_issuable_credit,
-        "Cumulative_Cash_Flow": np.cumsum(net_cash_flow[1:])
+        # [수정] [1:]을 제거하여 전체 길이를 맞춤
+        "Cumulative_Cash_Flow": np.cumsum(net_cash_flow)
     })
     st.dataframe(df_res, use_container_width=True)
     st.download_button("CSV 다운로드", df_res.to_csv(index=False).encode('utf-8-sig'), "simulation_report.csv")
