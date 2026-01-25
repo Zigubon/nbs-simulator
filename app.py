@@ -8,7 +8,7 @@ from scipy.interpolate import interp1d
 # 1. 시스템 설정
 # ==============================================================================
 st.set_page_config(
-    page_title="ZIGUBON | Forest Economic Simulator",
+    page_title="ZIGUBON | Forest Carbon & ESG Simulator",
     page_icon="🌲",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -21,6 +21,10 @@ st.markdown("""
     div[data-testid="stMetricLabel"] { font-size: 14px; color: #555; font-weight: 600; }
     div[data-testid="stCard"] { background-color: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.04); padding: 1rem; }
     .stExpander { border: 1px solid #e0e0e0; border-radius: 8px; background: white; }
+    /* 탭 스타일 */
+    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+    .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: #fff; border-radius: 4px 4px 0 0; gap: 1px; padding-top: 10px; padding-bottom: 10px; }
+    .stTabs [aria-selected="true"] { background-color: #e8f5e9; color: #145A32; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -57,7 +61,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 2. 수종 선택
+    # 2. 수종 및 비율
     st.subheader("2️⃣ 수종 포트폴리오")
     species_list = df_forest['name'].unique()
     default_sp = [species_list[0], species_list[1]] if len(species_list) > 1 else [species_list[0]]
@@ -87,17 +91,15 @@ with st.sidebar:
     conn_value = conn_map[connectivity_score]
     
     density_factor = st.slider("식재 밀도 지수 (%)", 50, 150, 100) / 100.0
+    estimated_trees = int(area * 3000 * density_factor)
+    st.caption(f"🌱 추정 식재 본수: {estimated_trees:,} 본")
 
     st.markdown("---")
     
-    # 4. 재무 및 리스크 (핵심 업데이트 부분)
-    st.subheader("4️⃣ 재무 설계 (Financials)")
-    
-    # [솔루션 1] 보조금 설정
-    subsidy_rate = st.slider("🏛️ 정부 보조금 지원율 (%)", 0, 100, 90, help="한국 조림 사업은 통상 90% 국비 지원을 받습니다.") / 100.0
-    
-    # [솔루션 2] 부가 수익원
-    other_revenue_per_ha = st.number_input("💰 기타 부가 수익 (만원/ha/년)", value=20, step=10, help="CSR 기업 후원금, 임산물 채취, 생태계서비스 지불제 등")
+    # 4. 재무 및 리스크
+    st.subheader("4️⃣ 재무 설계")
+    subsidy_rate = st.slider("🏛️ 정부 보조금 지원율 (%)", 0, 100, 90) / 100.0
+    other_revenue_per_ha = st.number_input("💰 부가 수익 (만원/ha/년)", value=20, step=10)
     
     c1, c2 = st.columns(2)
     with c1:
@@ -106,7 +108,7 @@ with st.sidebar:
         annual_cost_per_ha = st.number_input("연 관리비 (만원/ha)", value=50, step=10)
     
     discount_rate = 0.045
-    buffer_ratio = 0.15 # 리스크 버퍼 고정
+    buffer_ratio = 0.15
 
     st.markdown("---")
 
@@ -128,6 +130,8 @@ years = list(range(2026, 2026 + project_period + 1))
 
 total_biomass_carbon = np.zeros(project_period + 1)
 total_soil_carbon = np.zeros(project_period + 1)
+species_data = {} # [복구] 수종별 시계열 데이터 저장용
+
 total_native_ratio = 0
 weighted_water_score = 0
 
@@ -147,8 +151,12 @@ for sp in selected_species:
     adjusted_uptake = standard_uptake * real_area * density_factor
     soil_uptake = adjusted_uptake * 0.35
     
+    # 합산 및 개별 저장
     total_biomass_carbon += adjusted_uptake
     total_soil_carbon += soil_uptake
+    
+    # [복구] 수종별 총 흡수량 (입목+토양) 저장
+    species_data[sp] = adjusted_uptake + soil_uptake
     
     if check_native(sp): total_native_ratio += ratio * 100
     try:
@@ -164,47 +172,35 @@ gross_credit = total_project_carbon - baseline_carbon
 buffer_amount = gross_credit * buffer_ratio
 net_issuable_credit = gross_credit - buffer_amount
 
-# --- Financial Engine (Updated) ---
-# 1. 비용 (보조금 반영)
-# 사용자가 부담하는 실질 초기 비용 = 전체 비용 * (1 - 보조금율)
+# --- Financial Engine ---
 real_initial_cost = (initial_cost_per_ha * area * 10000) * (1 - subsidy_rate)
 annual_cost_total = annual_cost_per_ha * area * 10000
 total_cost_real = real_initial_cost + (annual_cost_total * project_period)
 
-# 2. 수익 (탄소 + 기타 수익)
-other_revenue_total = other_revenue_per_ha * area * 10000 # 연간 기타 수익
+other_revenue_total = other_revenue_per_ha * area * 10000 
 revenue_stream = []
 net_cash_flow = []
-net_cash_flow.append(-real_initial_cost) # Year 0
-
-cumulative_profit = [-real_initial_cost] # 누적 순수익 그래프용
+net_cash_flow.append(-real_initial_cost) 
+cumulative_profit = [-real_initial_cost] 
 
 for i, yr in enumerate(years):
     if i == 0: continue
     
-    # 탄소 수익
     annual_credit = net_issuable_credit[i] - net_issuable_credit[i-1]
     if yr > df_price['year'].max(): curr_price = df_price.iloc[-1][price_col]
     else: curr_price = df_price[df_price['year'] == yr][price_col].values[0]
-    carbon_rev = annual_credit * curr_price
     
-    # 총 연간 수익 = 탄소 수익 + 기타 수익(CSR 등)
-    total_annual_rev = carbon_rev + other_revenue_total
-    
+    total_annual_rev = (annual_credit * curr_price) + other_revenue_total
     revenue_stream.append(total_annual_rev)
     
-    # 순현금흐름
     net_flow = total_annual_rev - annual_cost_total
     net_cash_flow.append(net_flow)
     cumulative_profit.append(cumulative_profit[-1] + net_flow)
 
 total_revenue_real = sum(revenue_stream)
 net_profit_real = total_revenue_real - total_cost_real
-
-# ROI
 roi = (net_profit_real / total_cost_real) * 100 if total_cost_real > 0 else 0
 
-# NPV
 npv = -real_initial_cost
 for t, flow in enumerate(net_cash_flow[1:], start=1):
     npv += flow / ((1 + discount_rate) ** t)
@@ -221,37 +217,61 @@ else: cbi_econ_score = 1.0 + (roi / 50.0)
 final_cbi_score = (cbi_native_score + cbi_water_score + cbi_conn_score + cbi_diversity_score + cbi_econ_score) / 5.0
 
 # ==============================================================================
-# 5. 대시보드 UI
+# 5. 대시보드 UI (Tabs 도입)
 # ==============================================================================
 forest_type = "혼효림" if len(selected_species) > 1 else "단순림"
-st.title(f"🌲 {forest_type} 사업성 분석 시뮬레이터")
-st.markdown(f"**{area}ha** / **{project_period}년** / **보조금 {int(subsidy_rate*100)}%** 적용 시나리오 ")
+st.title(f"🌲 {forest_type} 통합 분석 시뮬레이터")
+st.markdown(f"**{area}ha** / **{project_period}년** / **{len(selected_species)}개 수종** 복합 분석")
 
+# Top Metrics
 col1, col2, col3, col4 = st.columns(4)
 final_credit = net_issuable_credit[-1]
 
 with col1:
-    st.metric("순 발행 크레딧", f"{final_credit:,.0f} tCO₂", "버퍼 차감 완료")
+    st.metric("총 순 흡수량 (Net)", f"{final_credit:,.0f} tCO₂", "버퍼 차감 후")
 with col2:
     color = "normal" if net_profit_real >= 0 else "inverse"
-    st.metric("최종 순수익 (Net Profit)", f"₩{net_profit_real/100000000:.1f} 억", f"ROI {roi:.1f}%", delta_color=color)
+    st.metric("최종 순수익", f"₩{net_profit_real/100000000:.1f} 억", f"ROI {roi:.1f}%", delta_color=color)
 with col3:
-    st.metric("순현재가치 (NPV)", f"₩{npv/100000000:.1f} 억", "할인율 4.5%")
+    st.metric("순현재가치 (NPV)", f"₩{npv/100000000:.1f} 억", f"할인율 4.5%")
 with col4:
-    st.metric("CBI 등급", f"{final_cbi_score:.1f} / 5.0", "생태+경제 종합")
+    st.metric("CBI 등급", f"{final_cbi_score:.1f} / 5.0", "ESG 종합")
 
 st.markdown("---")
 
-c_main, c_sub = st.columns([2, 1])
+# ------------------------------------------------------------------------------
+# 탭 구성: 사용자 요청대로 탄소 그래프와 재무 그래프를 모두 살림
+# ------------------------------------------------------------------------------
+tab1, tab2, tab3 = st.tabs(["📊 탄소·생태 분석", "💰 재무·수익성 분석", "🕸️ ESG·CBI 평가"])
 
-with c_main:
-    st.subheader("💰 누적 현금 흐름 (J-Curve)")
-    fig = go.Figure()
+# [Tab 1] 탄소 & 물리적 생장 (복구됨)
+with tab1:
+    c_t1, c_t2 = st.columns(2)
     
-    # 손익분기점(0원) 라인
-    fig.add_hline(y=0, line_dash="dot", line_color="gray")
-    
-    fig.add_trace(go.Scatter(
+    with c_t1:
+        st.subheader("🌲 총 탄소 흡수 및 베이스라인")
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(x=years, y=total_biomass_carbon, mode='lines', name='입목 바이오매스', stackgroup='one', line=dict(width=0, color='#27ae60')))
+        fig1.add_trace(go.Scatter(x=years, y=total_soil_carbon, mode='lines', name='토양/기타 저장고', stackgroup='one', line=dict(width=0, color='#8d6e63')))
+        fig1.add_trace(go.Scatter(x=years, y=baseline_carbon, mode='lines', name='베이스라인 (무관리)', line=dict(color='#34495e', width=2, dash='dash')))
+        fig1.update_layout(xaxis_title="연도", yaxis_title="tCO₂", height=350, hovermode="x unified", legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig1, use_container_width=True)
+        
+    with c_t2:
+        st.subheader("🌿 수종별 흡수량 기여도 (복구됨)")
+        fig2 = go.Figure()
+        # 수종별 누적 그래프 그리기
+        for sp, data in species_data.items():
+            fig2.add_trace(go.Scatter(x=years, y=data, mode='lines', name=sp, stackgroup='one'))
+        fig2.update_layout(xaxis_title="연도", yaxis_title="tCO₂ (수종별)", height=350, hovermode="x unified", legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig2, use_container_width=True)
+
+# [Tab 2] 재무 & 수익성 (J-Curve)
+with tab2:
+    st.subheader("💰 누적 현금 흐름 (J-Curve Analysis)")
+    fig3 = go.Figure()
+    fig3.add_hline(y=0, line_dash="dot", line_color="gray")
+    fig3.add_trace(go.Scatter(
         x=list(range(0, project_period + 1)), 
         y=cumulative_profit,
         mode='lines', 
@@ -259,43 +279,44 @@ with c_main:
         fill='tozeroy',
         line=dict(color='#2ecc71' if net_profit_real > 0 else '#e74c3c', width=3)
     ))
+    fig3.update_layout(xaxis_title="사업 연차", yaxis_title="누적 금액 (원)", height=400, hovermode="x unified")
+    st.plotly_chart(fig3, use_container_width=True)
     
-    fig.update_layout(
-        xaxis_title="사업 연차", yaxis_title="누적 금액 (원)",
-        height=400, hovermode="x unified",
-        margin=dict(t=30)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    if net_profit_real < 0:
-        st.error("⚠️ **적자 경고:** 현재 구조로는 수익을 내기 어렵습니다. '정부 보조금'을 높이거나 '기타 부가 수익(CSR 등)'을 확보해야 합니다.")
-    else:
-        st.success("✅ **흑자 전환:** 보조금과 부가 수익 덕분에 사업성이 확보되었습니다.")
+    # 상세 재무표
+    with st.expander("💸 상세 비용 및 수익 내역 보기"):
+        st.write(f"- **총 비용:** ₩{total_cost_real:,.0f} (초기: ₩{real_initial_cost:,.0f} / 관리: ₩{annual_cost_total:,.0f})")
+        st.write(f"- **총 매출:** ₩{total_revenue_real:,.0f} (탄소 판매 + 기타 수익)")
+        st.write(f"- **보조금 효과:** 초기 비용의 {int(subsidy_rate*100)}% 절감")
 
-with c_sub:
-    st.subheader("🕸️ 가치 평가 (Radar)")
-    categories = ['자생종', '수자원', '연결성', '다양성', '수익성(ROI)']
-    r_values = [cbi_native_score, cbi_water_score, cbi_conn_score, cbi_diversity_score, cbi_econ_score]
-    
-    fig_radar = go.Figure()
-    fig_radar.add_trace(go.Scatterpolar(
-        r=r_values, theta=categories, fill='toself', name='Score',
-        line=dict(color='#145A32')
-    ))
-    fig_radar.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
-        showlegend=False, height=350,
-        margin=dict(l=30, r=30, t=20, b=20)
-    )
-    st.plotly_chart(fig_radar, use_container_width=True)
+# [Tab 3] ESG & CBI
+with tab3:
+    c_e1, c_e2 = st.columns([1, 1])
+    with c_e1:
+        st.subheader("🕸️ CBI 가치 평가 (Radar)")
+        categories = ['자생종', '수자원', '연결성', '다양성', '수익성(ROI)']
+        r_values = [cbi_native_score, cbi_water_score, cbi_conn_score, cbi_diversity_score, cbi_econ_score]
+        
+        fig_radar = go.Figure()
+        fig_radar.add_trace(go.Scatterpolar(r=r_values, theta=categories, fill='toself', name='Score', line=dict(color='#145A32')))
+        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])), showlegend=False, height=350)
+        st.plotly_chart(fig_radar, use_container_width=True)
+        
+    with c_e2:
+        st.subheader("📋 CBI 상세 점수표")
+        st.info(f"""
+        - **자생종 비율:** {total_native_ratio:.0f}% ({cbi_native_score:.1f}점)
+        - **경제성(ROI):** {roi:.1f}% ({cbi_econ_score:.1f}점)
+        - **생태 연결성:** {connectivity_score} ({cbi_conn_score:.1f}점)
+        - **종 다양성:** {len(selected_species)}종 혼합 ({cbi_diversity_score:.1f}점)
+        """)
 
-# Data Download
-with st.expander("📥 상세 재무제표 다운로드"):
+# Data Download (Footer Area)
+with st.expander("📥 전체 시뮬레이션 데이터 다운로드"):
     df_res = pd.DataFrame({
         "Year": list(range(0, project_period + 1)),
-        "Net_Credit_Cumulative": [0] + list(net_issuable_credit[1:]),
-        "Cash_Flow_Annual": net_cash_flow,
+        "Total_Carbon": [0] + list(total_project_carbon[1:]),
+        "Net_Credit": [0] + list(net_issuable_credit[1:]),
         "Cumulative_Profit": cumulative_profit
     })
     st.dataframe(df_res, use_container_width=True)
-    st.download_button("CSV 다운로드", df_res.to_csv(index=False).encode('utf-8-sig'), "financial_report.csv")
+    st.download_button("CSV 다운로드", df_res.to_csv(index=False).encode('utf-8-sig'), "full_simulation_report.csv")
